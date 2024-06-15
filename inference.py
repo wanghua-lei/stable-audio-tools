@@ -10,10 +10,10 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # Download model
 model, model_config = get_pretrained_model("stabilityai/stable-audio-open-1.0")
 sample_rate = model_config["sample_rate"]
-# sample_size = model_config["sample_size"]
-sample_size = 458752 #10s
+sample_size = model_config["sample_size"]
+# sample_size = 983040 #20s
 model = model.to(device)
-batch_size = 20
+batch_size = 10
 # Set up text and timing conditioning
 # conditioning = [
 #     {"prompt": "An emergency siren ringing with car horn honking","seconds_start": 0, "seconds_total": 10},
@@ -45,13 +45,13 @@ val_dataloder = create_val_dataloader_from_config(
 with torch.no_grad():
     for batch in tqdm(val_dataloder):
         # Generate stereo audio
-        demo_reals, conditioning = batch
+        conditioning = batch[0]
         output = generate_diffusion_cond(
             model,
             steps=100,
             cfg_scale=7,
             conditioning=conditioning,
-            batch_size = batch_size,
+            batch_size = len(conditioning),
             sample_size=sample_size,
             sigma_min=0.3,
             sigma_max=500,
@@ -66,12 +66,14 @@ with torch.no_grad():
         output = output.to(torch.float32).div(torch.max(torch.abs(output))).clamp(-1, 1).mul(32767).to(torch.int16).cpu()
 
         for i in range(len(conditioning)):
-            name = conditioning[i]["prompt"]
-            filename = f'recon/open/{name}.wav'
+            name = conditioning[i]['path']+'.wav'
+
+            filename = f'recon/musiccaps/{name}'
             wavs = output[i,:,:]
-            try:
-                torchaudio.save(filename, wavs, sample_rate)
-            except:
-                filename = f'recon/{i}.wav'
-                torchaudio.save(filename, wavs, sample_rate)
+            # wavs = wavs[:,:sample_rate*20]
+            # try:
+            torchaudio.save(filename, wavs, sample_rate)
+            # except:
+            #     filename = f'recon/musiccaps/{i}.wav'
+            #     torchaudio.save(filename, wavs, sample_rate)
 
