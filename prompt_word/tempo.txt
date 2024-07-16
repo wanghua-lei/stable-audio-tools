@@ -1,0 +1,4 @@
+slow
+medium
+moderate
+fast

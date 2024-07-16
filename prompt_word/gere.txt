@@ -1,0 +1,10 @@
+experimental
+classical
+jazz
+rock
+pop
+electronic
+country
+folk
+metal
+disco
