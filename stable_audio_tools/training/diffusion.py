@@ -1559,7 +1559,7 @@ class DiffusionCondDemoCallbackNew(pl.Callback):
 
         try:
             print("Getting conditioning")
-            prompts = [md["prompt"][:512] for md in self.demo_conditioning]
+            prompts = [md["prompt"][:512] for md in self.demo_conditioning] ###add
 
             with torch.cuda.amp.autocast():
                 conditioning = module.diffusion.conditioner(demo_cond, module.device)
@@ -1592,7 +1592,7 @@ class DiffusionCondDemoCallbackNew(pl.Callback):
 
                 # Put the demos together
                 fakesc = fakes #torch.Size([4, 1, ])
-                for i in range(len(prompts)):
+                for i in range(len(prompts)):###add
                     names = prompts[i]
                     filename = f'recon/demo_cfg_{cfg_scale}_{trainer.global_step:08}_{names}.wav'
                     wavs = fakesc[i,:,:]
