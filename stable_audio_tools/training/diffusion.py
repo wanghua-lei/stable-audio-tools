@@ -1503,3 +1503,126 @@ class DiffusionPriorDemoCallback(pl.Callback):
         log_dict[f'source_melspec_left'] = wandb.Image(audio_spectrogram_image(source))
 
         trainer.logger.experiment.log(log_dict)
+class DiffusionCondDemoCallbackNew(pl.Callback):
+    def __init__(self, 
+                 demo_every=2000,
+                 num_demos=8,
+                 sample_size=65536,
+                 demo_steps=250,
+                 sample_rate=44100,
+                 demo_conditioning: tp.Optional[tp.Dict[str, tp.Any]] = {},
+                 demo_cfg_scales: tp.Optional[tp.List[int]] = [3, 5, 7],
+                 demo_cond_from_batch: bool = False,
+                 display_audio_cond: bool = False
+    ):
+        super().__init__()
+
+        self.demo_every = demo_every
+        self.num_demos = num_demos
+        self.demo_samples = sample_size
+        self.demo_steps = demo_steps #250
+        self.sample_rate = sample_rate
+        self.last_demo_step = -1
+        self.demo_conditioning = demo_conditioning
+        self.demo_cfg_scales = demo_cfg_scales
+
+        # If true, the callback will use the metadata from the batch to generate the demo conditioning
+        self.demo_cond_from_batch = demo_cond_from_batch
+
+        # If true, the callback will display the audio conditioning
+        self.display_audio_cond = display_audio_cond
+
+    @rank_zero_only
+    @torch.no_grad()
+    def on_train_batch_end(self, trainer, module: DiffusionCondTrainingWrapper, outputs, batch, batch_idx):        
+
+        if (trainer.global_step - 1) % self.demo_every != 0 or self.last_demo_step == trainer.global_step:
+            return
+
+        module.eval()
+
+        print(f"Generating demo")
+        self.last_demo_step = trainer.global_step
+
+        demo_samples = self.demo_samples
+
+        demo_cond = self.demo_conditioning
+
+        if self.demo_cond_from_batch:
+            # Get metadata from the batch
+            demo_cond = batch[1][:self.num_demos]
+
+        if module.diffusion.pretransform is not None:
+            demo_samples = demo_samples // module.diffusion.pretransform.downsampling_ratio
+
+        noise = torch.randn([self.num_demos, module.diffusion.io_channels, demo_samples]).to(module.device)
+
+        try:
+            print("Getting conditioning")
+            prompts = [md["prompt"][:512] for md in self.demo_conditioning]
+
+            with torch.cuda.amp.autocast():
+                conditioning = module.diffusion.conditioner(demo_cond, module.device)
+
+            cond_inputs = module.diffusion.get_conditioning_inputs(conditioning) #gene
+
+            log_dict = {}
+
+            if self.display_audio_cond:
+                audio_inputs = torch.cat([cond["audio"] for cond in demo_cond], dim=0)
+                audio_inputs = rearrange(audio_inputs, 'b d n -> d (b n)')
+
+                filename = "recon/"+f'demo_audio_cond_{trainer.global_step:08}.wav'
+                audio_inputs = audio_inputs.to(torch.float32).mul(32767).to(torch.int16).cpu()
+                torchaudio.save(filename, audio_inputs, self.sample_rate)
+                log_dict[f'demo_audio_cond'] = wandb.Audio(filename, sample_rate=self.sample_rate, caption="Audio conditioning")
+                log_dict[f"demo_audio_cond_melspec_left"] = wandb.Image(audio_spectrogram_image(audio_inputs))
+                trainer.logger.experiment.log(log_dict)
+
+            for cfg_scale in self.demo_cfg_scales:
+
+                print(f"Generating demo for cfg scale {cfg_scale}")
+                
+                with torch.cuda.amp.autocast():
+                    model = module.diffusion_ema.model if module.diffusion_ema is not None else module.diffusion.model
+
+                    fakes = sample(model, noise, self.demo_steps, 0, **cond_inputs, cfg_scale=cfg_scale, batch_cfg=True)
+                    if module.diffusion.pretransform is not None:
+                        fakes = module.diffusion.pretransform.decode(fakes)
+
+                # Put the demos together
+                fakesc = fakes #torch.Size([4, 1, ])
+                for i in range(len(prompts)):
+                    names = prompts[i]
+                    filename = f'recon/demo_cfg_{cfg_scale}_{trainer.global_step:08}_{names}.wav'
+                    wavs = fakesc[i,:,:]
+                    wavsfakes = wavs.to(torch.float32).div(torch.max(torch.abs(fakes))).mul(32767).to(torch.int16).cpu()
+                    try:
+                        torchaudio.save(filename, wavsfakes, self.sample_rate)
+                    except:
+                        filename = f'recon/demo_cfg_{cfg_scale}_{trainer.global_step:08}_{i}.wav'
+                        torchaudio.save(filename, wavsfakes, self.sample_rate)
+                
+                fakes = rearrange(fakes, 'b d n -> d (b n)')
+                log_dict = {}
+
+                # filename =  "recon/" + f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                fakes = fakes.to(torch.float32).div(torch.max(torch.abs(fakes))).mul(32767).to(torch.int16).cpu()
+                # torchaudio.save(filename, fakes, self.sample_rate)
+
+                # log_dict[f'demo_cfg_{cfg_scale}'] = wandb.Audio(filename,
+                #                                     sample_rate=self.sample_rate,
+                #                                     caption=f'Reconstructed')
+
+                log_dict[f'demo_melspec_left_cfg_{cfg_scale}'] = wandb.Image(audio_spectrogram_image(fakes))
+
+                trainer.logger.experiment.log(log_dict)
+            
+            del fakes
+
+        except Exception as e:
+            raise e
+        finally:
+            gc.collect()
+            torch.cuda.empty_cache()
+            module.train()
