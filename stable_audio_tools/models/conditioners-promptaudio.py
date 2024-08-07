@@ -658,7 +658,69 @@ class QFormerAudio(nn.Module):
             learned_queries = layer(learned_queries, audio_embeddings, memory_key_padding_mask=attention_mask)
 
         return [learned_queries, torch.ones(learned_queries.shape[0], self.num_query_tokens).to(device)]
+class ImageProjection(nn.Module):
+    def __init__(
+        self,
+        image_embed_dim: int = 768,
+        cross_attention_dim: int = 768,
+        num_image_text_embeds: int = 4,
+    ):
+        super().__init__()
+        self.cross_attention_dim = cross_attention_dim
+        self.num_image_text_embeds = num_image_text_embeds
+        self.image_embeds = nn.Linear(image_embed_dim, cross_attention_dim) #self.num_image_text_embeds *
+        self.norm = nn.LayerNorm(cross_attention_dim)
 
+    def forward(self, image_embeds: torch.Tensor):
+        batch_size = image_embeds.shape[0]
+
+        # image
+        image_embeds = self.image_embeds(image_embeds)
+        image_embeds = image_embeds.reshape(batch_size, -1, self.cross_attention_dim) #self.num_image_text_embeds
+        image_embeds = self.norm(image_embeds)
+        return image_embeds
+
+from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+class Video(Conditioner):
+    def __init__(
+            self,
+            dim: int=1024,
+            output_dim: int=768,
+            name: str="h94/IP-Adapter",
+            enable_grad: bool = False,
+            project_out: bool = False,
+    ):
+        super().__init__(output_dim, output_dim, project_out=project_out)
+
+        self.dim = dim
+        self.output_dim = output_dim
+        self.enable_grad = enable_grad
+
+        self.image_processor = CLIPImageProcessor()
+        self.image_encoder = CLIPVisionModelWithProjection.from_pretrained("h94/IP-Adapter", subfolder="models/image_encoder")
+        self.image_encoder.requires_grad_(False).to(torch.float16)
+        self.encoder_hid_proj_ip = ImageProjection(
+                image_embed_dim=dim,
+                cross_attention_dim=output_dim
+            )
+
+    def forward(self, video_batch, device=None):
+        self.image_encoder.to(device)
+        self.encoder_hid_proj_ip.to(device)
+        batch_size = len(video_batch)
+        frames = torch.cat(video_batch)
+        if torch.all(frames == 0):
+            image_embeddings = torch.zeros((batch_size, 32, self.output_dim)).to(device)
+        else:
+            images = self.image_processor(images=frames, return_tensors="pt").to(device) #32, 1024 .to(torch.float32)
+            with torch.cuda.amp.autocast(dtype=torch.float16) and torch.set_grad_enabled(self.enable_grad):
+                image_embeddings = self.image_encoder(**images).image_embeds #4, 1024
+
+            image_embeddings = image_embeddings.reshape(batch_size, -1, self.dim).to(device)
+            # image_embeddings = torch.mean(image_embeddings, dim=1, keepdim=True) #mean-> 1,1024
+            image_embeddings = self.encoder_hid_proj_ip(image_embeddings) ##bz, 4, 768
+
+        return [image_embeddings, torch.ones(image_embeddings.shape[0], image_embeddings.shape[1]).to(device)]
 def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.Any]) -> MultiConditioner:
     """
     Create a MultiConditioner from a conditioning config dictionary
