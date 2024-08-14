@@ -66,10 +66,9 @@ def main():
         new_state_dict ={}
         state_dict = load_ckpt_state_dict(args.pretransform_ckpt_path)
         for key in state_dict:
-            if key.startswith('autoencoder.'):
-                new_key = key[12:]
+            if key.startswith('pretransform.'): ##model.
+                new_key = key[19:]
                 new_state_dict[new_key] = state_dict[key]
-        model.pretransform.load_state_dict(new_state_dict)
     
     # Remove weight_norm from the pretransform if specified
     if args.remove_pretransform_weight_norm == "post_load":
